@@ -1,0 +1,3 @@
+mcp>=1.0.0
+snowflake-connector-python[secure-local-storage]
+python-dotenv

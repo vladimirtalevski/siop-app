@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "siop-snowflake": {
+      "command": "python",
+      "args": ["C:/Users/VladimirTalevski/siop-app/mcp/server.py"],
+      "env": {
+        "SIOP_MCP_ROLE": "GLOBAL_SUPPLY_CHAIN"
+      }
+    }
+  }
+}

@@ -1,0 +1,161 @@
+{
+  "schema": "FLS_PROD_DB.MART_DYN_FO",
+  "description": "FLSmidth D365 F&O production data mart — Supply, Inventory & Operations",
+  "source_erp": "Microsoft D365 Finance & Operations",
+  "marts": {
+    "ONHAND_INVENTORY": {
+      "description": "Current on-hand stock levels per item, site, warehouse and status",
+      "grain": "item + site + warehouse + status",
+      "key_columns": {
+        "DATAAREAID": "Legal entity / company code (za3=South Africa Stormill, za4=South Africa Wadeville, us2=USA, gh1=Ghana, dk1=Denmark)",
+        "ITEMID": "Item/part number",
+        "INVENTSITEID": "Site/plant code",
+        "INVENTLOCATIONID": "Warehouse code",
+        "AVAILPHYSICAL": "Available physical quantity (use this for available stock)",
+        "PHYSICALINVENT": "Total physical inventory on hand",
+        "RESERVPHYSICAL": "Physically reserved quantity",
+        "ONORDER": "Quantity on order (inbound supply)",
+        "AVAILORDERED": "Available ordered quantity"
+      },
+      "common_questions": ["How much stock do we have?", "What is available inventory?", "Show me on-hand quantities"]
+    },
+    "PURCHASE_ORDERS": {
+      "description": "Purchase order headers from D365 — supplier orders for goods and services",
+      "grain": "purchase order header (one row per PO)",
+      "key_columns": {
+        "DATAAREAID": "Legal entity",
+        "PURCHID": "Purchase order number",
+        "ORDERACCOUNT": "Vendor/supplier account number",
+        "PURCHSTATUS": "PO status (1=Open order, 2=Received, 3=Invoiced, 4=Canceled)",
+        "INVENTSITEID": "Delivery site",
+        "CURRENCYCODE": "Transaction currency",
+        "CREATEDDATETIME": "PO creation date"
+      },
+      "common_questions": ["How many open POs?", "Show purchase orders by supplier", "What is the PO status?"]
+    },
+    "PURCHASE_ORDER_LINE": {
+      "description": "Purchase order lines — individual line items within each PO",
+      "grain": "PO + line number",
+      "key_columns": {
+        "PURCHID": "Purchase order number (joins to PURCHASE_ORDERS)",
+        "DATAAREAID": "Legal entity",
+        "LINENUMBER": "Line number within the PO",
+        "ITEMID": "Item/part number ordered",
+        "PURCHQTY": "Ordered quantity",
+        "REMAINPURCHPHYSICAL": "Remaining quantity to be delivered",
+        "PURCHPRICE": "Unit purchase price",
+        "LINEAMOUNT": "Total line value (qty × price)",
+        "CONFIRMEDSHIPDATE": "Confirmed ship date from supplier",
+        "DELIVERYDATE": "Requested delivery date",
+        "DLVTERM": "Delivery terms (F%/C% = ship terms, D% = delivery terms)"
+      },
+      "common_questions": ["What is the open PO value?", "What is remaining to be delivered?", "Show me overdue PO lines"]
+    },
+    "SALES_ORDERS": {
+      "description": "Sales order headers — customer orders for FLSmidth products",
+      "grain": "sales order header",
+      "key_columns": {
+        "DATAAREAID": "Legal entity",
+        "SALESID": "Sales order number",
+        "CUSTACCOUNT": "Customer account number",
+        "SALESNAME": "Customer name",
+        "SALESSTATUS": "Order status (1=Open, 2=Delivered, 3=Invoiced, 4=Canceled)",
+        "INVENTSITEID": "Fulfillment site",
+        "CURRENCYCODE": "Transaction currency",
+        "CREATEDDATETIME": "Order creation date"
+      },
+      "common_questions": ["What is our sales order backlog?", "Show orders by customer", "What is the order value?"]
+    },
+    "ORDER_LINES": {
+      "description": "Sales order lines — individual line items within each sales order",
+      "grain": "sales order + line number",
+      "key_columns": {
+        "SALESID": "Sales order number",
+        "DATAAREAID": "Legal entity",
+        "LINENUM": "Line number",
+        "ITEMID": "Item/part number",
+        "SALESQTY": "Ordered quantity",
+        "SALESPRICE": "Unit sales price",
+        "LINEAMOUNT": "Total line value",
+        "SHIPPINGDATEREQUESTED": "Customer requested ship date",
+        "SHIPPINGDATECONFIRMED": "Confirmed ship date",
+        "SALESSTATUS": "Line status (1=Open, 2=Delivered, 3=Invoiced, 4=Canceled)"
+      },
+      "common_questions": ["What is the order line value?", "Show me DIFOT performance", "What lines are overdue?"]
+    },
+    "DEMAND_FORECAST": {
+      "description": "Demand forecast entries from D365 demand planning module",
+      "grain": "item + model + date",
+      "key_columns": {
+        "DATAAREAID": "Legal entity",
+        "ITEMID": "Item number",
+        "MODELID": "Forecast model ID",
+        "STARTDATE": "Forecast period start date",
+        "SALESQTY": "Forecasted quantity",
+        "AMOUNT": "Forecasted value",
+        "ACTIVE": "1 = active forecast, 0 = inactive"
+      },
+      "common_questions": ["What is the demand forecast?", "Show forecast by item", "Compare forecast to actuals"]
+    },
+    "PRICE": {
+      "description": "Item cost prices — standard cost per item, site and activation date",
+      "grain": "item + site + activation date + price type",
+      "key_columns": {
+        "DATAAREAID": "Legal entity",
+        "ITEMID": "Item number",
+        "PRICE": "Cost price value",
+        "PRICETYPE": "0 = standard cost",
+        "ACTIVATIONDATE": "Date the price became active",
+        "UNITID": "Unit of measure"
+      }
+    },
+    "INVENTORY_TRANSACTIONS": {
+      "description": "Individual inventory movements — receipts, issues, transfers, reservations",
+      "grain": "one row per inventory transaction",
+      "key_columns": {
+        "DATAAREAID": "Legal entity",
+        "ITEMID": "Item number",
+        "DATEPHYSICAL": "Physical movement date (1900-01-01 = no physical move yet)",
+        "QTY": "Transaction quantity (negative = outbound)",
+        "STATUSISSUE": "Issue status (4 = physically reserved)",
+        "STATUSRECEIPT": "Receipt status"
+      }
+    },
+    "ITEMS": {
+      "description": "Item master — all products and spare parts",
+      "grain": "item + legal entity",
+      "key_columns": {
+        "ITEMID": "Item/part number",
+        "DATAAREAID": "Legal entity",
+        "PRODUCT": "Product record ID (links to PRODUCTS and PRODUCT_TRANSLATIONS)",
+        "PRIMARYVENDORID": "Default supplier",
+        "ITEMBUYERGROUPID": "Buyer/planner group"
+      }
+    },
+    "BOM_VERSIONS": {
+      "description": "Bill of Materials header — active BOM versions per finished good",
+      "key_columns": {
+        "ITEMID": "Finished good item number",
+        "DATAAREAID": "Legal entity",
+        "BOMID": "BOM version ID",
+        "ACTIVE": "1 = active version"
+      }
+    },
+    "BOM_LINES": {
+      "description": "Bill of Materials lines — components within each BOM",
+      "key_columns": {
+        "BOMID": "BOM version ID (joins to BOM_VERSIONS)",
+        "ITEMID": "Component item number",
+        "BOMQTY": "Quantity of component per finished good unit"
+      }
+    }
+  },
+  "entity_map": {
+    "za3": {"name": "South Africa - Stormill", "currency": "ZAR", "erp": "D365"},
+    "za4": {"name": "South Africa - Wadeville", "currency": "ZAR", "erp": "D365"},
+    "us2": {"name": "USA", "currency": "USD", "erp": "D365"},
+    "gh1": {"name": "Ghana", "currency": "GHS", "erp": "D365"},
+    "dk1": {"name": "Denmark", "currency": "DKK", "erp": "D365"},
+    "sa1": {"name": "Saudi Arabia", "currency": "SAR", "erp": "D365"}
+  }
+}

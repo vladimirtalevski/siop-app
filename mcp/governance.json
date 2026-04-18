@@ -1,0 +1,42 @@
+{
+  "roles": {
+    "GLOBAL_SUPPLY_CHAIN": {
+      "description": "Full access — global supply chain leadership",
+      "allowed_entities": ["*"],
+      "allowed_marts": ["*"],
+      "sensitive_columns": "visible",
+      "row_limit": 5000
+    },
+    "EMEA_ANALYST": {
+      "description": "EMEA region only — South Africa, Denmark",
+      "allowed_entities": ["za3", "za4", "dk1"],
+      "allowed_marts": ["ONHAND_INVENTORY", "PURCHASE_ORDERS", "PURCHASE_ORDER_LINE", "ITEMS", "PRICE"],
+      "sensitive_columns": "masked",
+      "row_limit": 1000
+    },
+    "AMERICAS_ANALYST": {
+      "description": "Americas region — USA operations",
+      "allowed_entities": ["us2"],
+      "allowed_marts": ["ONHAND_INVENTORY", "PURCHASE_ORDERS", "PURCHASE_ORDER_LINE", "SALES_ORDERS", "ORDER_LINES", "ITEMS"],
+      "sensitive_columns": "masked",
+      "row_limit": 1000
+    },
+    "FINANCE": {
+      "description": "Finance team — read access to values, no operational detail",
+      "allowed_entities": ["*"],
+      "allowed_marts": ["PURCHASE_ORDERS", "PURCHASE_ORDER_LINE", "SALES_ORDERS", "ORDER_LINES"],
+      "sensitive_columns": "visible",
+      "row_limit": 2000
+    },
+    "READ_ONLY": {
+      "description": "Basic read — summary data only, no unit prices",
+      "allowed_entities": ["*"],
+      "allowed_marts": ["ONHAND_INVENTORY", "PURCHASE_ORDERS", "SALES_ORDERS"],
+      "sensitive_columns": "masked",
+      "row_limit": 500
+    }
+  },
+  "sensitive_columns": ["PURCHPRICE", "LINEAMOUNT", "SALESPRICE", "PRICE"],
+  "blocked_operations": ["INSERT", "UPDATE", "DELETE", "DROP", "ALTER", "TRUNCATE", "GRANT", "REVOKE"],
+  "max_query_rows": 5000
+}
