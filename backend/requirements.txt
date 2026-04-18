@@ -1,0 +1,9 @@
+snowflake-connector-python[pandas]
+fastapi
+uvicorn[standard]
+python-dotenv
+pandas
+prophet
+scikit-learn
+statsmodels
+python-multipart
