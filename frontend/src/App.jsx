@@ -7,6 +7,9 @@ import SalesOrdersPage from "./pages/SalesOrdersPage";
 import SupplyDemandPage from "./pages/SupplyDemandPage";
 import MLForecastPage from "./pages/MLForecastPage";
 import SlowMovingPage from "./pages/SlowMovingPage";
+import ExpeditePage from "./pages/ExpeditePage";
+import ChatPage from "./pages/ChatPage";
+import DataQualityPage from "./pages/DataQualityPage";
 import "./App.css";
 
 const PAGES = [
@@ -18,6 +21,9 @@ const PAGES = [
   { id: "sales-orders", label: "Sales Order Lines" },
   { id: "supply-demand", label: "Supply vs Demand" },
   { id: "slow-moving", label: "Slow-Moving Items" },
+  { id: "expedite", label: "Expedite Report" },
+  { id: "chat", label: "AI Assistant" },
+  { id: "data-quality", label: "Data Quality" },
 ];
 
 export default function App() {
@@ -52,6 +58,9 @@ export default function App() {
         {page === "supply-demand" && <SupplyDemandPage />}
         {page === "ml-forecast" && <MLForecastPage />}
         {page === "slow-moving" && <SlowMovingPage />}
+        {page === "expedite" && <ExpeditePage />}
+        {page === "chat" && <ChatPage />}
+        {page === "data-quality" && <DataQualityPage />}
       </main>
     </div>
   );

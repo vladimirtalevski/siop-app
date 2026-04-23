@@ -34,7 +34,8 @@ export default function MLForecastPage() {
     if (itemId.trim()) params.item_id = itemId.trim();
     fetchMLForecast(params)
       .then(r => {
-        if (r.error) setError(r.error);
+        if (r.static_mode) setError("ML Forecast requires a live backend connection. Run locally with start.bat to use this feature.");
+        else if (r.error) setError(r.error);
         else setResult(r);
       })
       .catch(e => setError(e.message))

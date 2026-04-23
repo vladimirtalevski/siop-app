@@ -70,7 +70,19 @@ export const fetchBOMForecast = (params) =>
   USE_STATIC ? loadStatic("forecast_bom") : api.get("/api/forecast/bom", { params }).then((r) => r.data);
 
 export const fetchMLForecast = (params) =>
-  api.get("/api/ml/forecast", { params }).then((r) => r.data);
+  USE_STATIC
+    ? Promise.resolve({ static_mode: true })
+    : api.get("/api/ml/forecast", { params }).then((r) => r.data);
 
 export const fetchSlowMoving = (params) =>
   USE_STATIC ? loadStatic("slow_moving") : api.get("/api/slow-moving", { params }).then((r) => r.data);
+
+export const fetchExpedite = (params) =>
+  USE_STATIC
+    ? Promise.resolve({ static_mode: true })
+    : api.get("/api/expedite", { params }).then((r) => r.data);
+
+export const sendChat = (messages, company) =>
+  USE_STATIC
+    ? Promise.resolve({ static_mode: true })
+    : api.post("/api/chat", { messages, company }).then((r) => r.data);

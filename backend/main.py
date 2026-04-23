@@ -1,24 +1,30 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from db import get_connection
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from db import get_connection, rewrite_sql, USE_MOTHERDUCK
 import pandas as pd
 import threading
 from typing import Optional
 from forecast_ml import run_prophet_forecast
+from chat import run_chat
 
 
 def _warm_connection():
-    """Trigger SSO at startup in a background thread so requests don't block."""
     try:
         conn = get_connection()
-        cur = conn.cursor()
-        cur.execute("SELECT CURRENT_TIMESTAMP()")
-        cur.fetchone()
-        cur.close()
-        print("✓ Snowflake connection ready.")
+        if USE_MOTHERDUCK:
+            import duckdb
+            conn.execute("SELECT 1")
+        else:
+            cur = conn.cursor()
+            cur.execute("SELECT CURRENT_TIMESTAMP()")
+            cur.fetchone()
+            cur.close()
+        print("✓ Connection ready.")
     except Exception as e:
-        print(f"✗ Snowflake connection failed: {e}")
+        print(f"✗ Connection failed: {e}")
 
 
 @asynccontextmanager
@@ -39,13 +45,46 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={"error": str(exc)},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
 
 def run_query(sql: str, params=None) -> list[dict]:
     conn = get_connection()
-    cur = conn.cursor()
-    cur.execute(sql, params or ())
-    cols = [d[0] for d in cur.description]
-    return [dict(zip(cols, row)) for row in cur.fetchall()]
+    sql = rewrite_sql(sql)
+    if USE_MOTHERDUCK:
+        result = conn.execute(sql).fetchdf()
+        return result.to_dict(orient="records")
+    else:
+        cur = conn.cursor()
+        cur.execute(sql, params or ())
+        cols = [d[0] for d in cur.description]
+        return [dict(zip(cols, row)) for row in cur.fetchall()]
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/api/debug/schemas")
+def debug_schemas():
+    """Returns all schemas and tables visible in the current MotherDuck connection."""
+    conn = get_connection()
+    tables = conn.execute("""
+        SELECT table_catalog, table_schema, table_name,
+               (SELECT COUNT(*) FROM information_schema.columns
+                WHERE table_schema = t.table_schema AND table_name = t.table_name) AS col_count
+        FROM information_schema.tables t
+        WHERE table_type = 'BASE TABLE'
+        ORDER BY table_catalog, table_schema, table_name
+    """).fetchdf()
+    return tables.to_dict(orient="records")
 
 
 # ── Inventory ──────────────────────────────────────────────────────────────
@@ -853,6 +892,418 @@ def ml_forecast(
     periods: int = 12,
 ):
     return run_prophet_forecast(item_id=item_id, company=company, periods=periods)
+
+
+@app.get("/api/expedite")
+def get_expedite(
+    company: str = "US2",
+    warehouse: str = "T01",
+    item_id: Optional[str] = None,
+    action_status: Optional[str] = None,
+    limit: int = 2000,
+):
+    companies_sql = f"('{company.upper()}')"
+    item_filter = f"AND rt.itemid = '{item_id.upper()}'" if item_id else ""
+    action_filter = f"AND action_status = '{action_status}'" if action_status else ""
+
+    sql = f"""
+WITH
+CTE_Net_Requirements AS (
+  SELECT *
+  FROM (
+    SELECT nr.*,
+      MAX(nr.planversion) OVER (PARTITION BY nr.itemid, nr.dataareaid) AS max_planversion
+    FROM FLS_PROD_DB.MART_DYN_FO.NET_REQUIREMENTS nr
+    WHERE UPPER(nr.dataareaid) IN {companies_sql}
+      AND nr.IsDelete IS NULL
+      AND nr.reftype <> 14
+  ) t
+  WHERE planversion = max_planversion
+),
+CTE_Open_Sales_Orders_Lines AS (
+  SELECT OL.SALESID, OL.itemid, OL.dataareaid, OL.linecreationsequencenumber, OL.linenum,
+    OL.salesstatus, OL.deliveryname AS DeliveryName, dpt.namealias AS CustomerName,
+    OL.custaccount, SO.deliverypostaladdress, SO.CUSTOMERREF,
+    CAST(OL.createddatetime AS DATE) AS createddatetime, 'Sales' AS source,
+    ROW_NUMBER() OVER (PARTITION BY OL.salesid, OL.itemid, OL.dataareaid ORDER BY OL.linenum ASC) AS rn
+  FROM FLS_PROD_DB.MART_DYN_FO.ORDER_LINES OL
+  LEFT JOIN FLS_PROD_DB.MART_DYN_FO.SALES_ORDERS SO ON OL.salesid = SO.salesid AND OL.dataareaid = SO.dataareaid
+  LEFT JOIN FLS_PROD_DB.MART_DYN_FO.CUSTOMERS c ON OL.custaccount = c.accountnum AND OL.dataareaid = c.dataareaid
+  LEFT JOIN FLS_PROD_DB.MART_DYN_FO.GLOBAL_ADDRESS_BOOK dpt ON dpt.recid = c.party
+  WHERE UPPER(OL.dataareaid) IN {companies_sql}
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY OL.salesid, OL.itemid, OL.dataareaid ORDER BY OL.linenum ASC) = 1
+),
+CTE_Open_Production_Order_Lines AS (
+  SELECT PB.Prodid, PB.dataareaid, PB.itemid, PB.linenum, PRO.inventrefid,
+    CAST(PRO.createddatetime AS DATE) AS createddate, SO.DELIVERYNAME, SO.CUSTOMERREF,
+    PB.backorderstatus AS ProductionStatus, 'Production' AS source,
+    ROW_NUMBER() OVER (PARTITION BY PB.Prodid, PB.itemid, PB.dataareaid ORDER BY PB.linenum ASC) AS rn
+  FROM FLS_PROD_DB.MART_DYN_FO.PRODUCTION_BOM PB
+  LEFT JOIN FLS_PROD_DB.MART_DYN_FO.PRODUCTION_ORDERS PRO ON PRO.PRODID = PB.PRODID AND PRO.dataareaid = PB.dataareaid
+  LEFT JOIN FLS_PROD_DB.MART_DYN_FO.SALES_ORDERS SO ON SO.salesid = PRO.inventrefid AND SO.dataareaid = PRO.dataareaid
+  WHERE PB.reqplanidsched = 'MP Daily' AND PB.backorderstatus = 1
+    AND UPPER(PB.dataareaid) IN {companies_sql}
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY PB.Prodid, PB.itemid, PB.dataareaid ORDER BY PB.linenum ASC) = 1
+),
+CTE_Open_Purchase_Order_Lines AS (
+  SELECT PL.purchid, PL.dataareaid, PL.itemid, PL.linenumber, PL.purchstatus,
+    CAST(PL.createddatetime AS DATE) AS createddatetime, PL.Purchreqlinerefid,
+    PL.Inventtransid, PL.VENDACCOUNT,
+    CAST(PL.ConfirmedDlv AS DATE) AS CONFIRMED_RECEIPT_DATE,
+    PL.FLSEXPEDITESTATUS AS EXPEDITE_STATUS,
+    DPT.name AS VendName, DR.Notes, DR.Name AS RefName,
+    ORD.ORDERER, REQ.REQUESTER AS EXPEDITOR,
+    PL.currencycode, PL.CONFIRMEDSHIPDATE, PL.PURCHREQLINEREFID,
+    PL.purchprice, PL.recid, V.party, DPT.recid AS DPTRecid,
+    'Purchase' AS source
+  FROM FLS_PROD_DB.MART_DYN_FO.PURCHASE_ORDER_LINE PL
+  LEFT JOIN (
+    SELECT PO.PURCHID, PO.dataareaid, CONCAT(PN.FIRSTNAME, PN.LASTNAME) AS ORDERER
+    FROM FLS_PROD_DB.MART_DYN_FO.PURCHASE_ORDERS PO
+    JOIN FLS_PROD_DB.MART_DYN_FO.WORKER W ON PO.WORKERPURCHPLACER = W.RECID
+    JOIN FLS_PROD_DB.MART_DYN_FO.PERSON_NAME PN ON PN.PERSON = W.PERSON
+    WHERE VALIDTO >= CURRENT_DATE()
+  ) ORD ON ORD.PURCHID = PL.PURCHID AND ORD.dataareaid = PL.dataareaid
+  LEFT JOIN (
+    SELECT PO.PURCHID, PO.dataareaid, CONCAT(PN.FIRSTNAME, PN.LASTNAME) AS REQUESTER
+    FROM FLS_PROD_DB.MART_DYN_FO.PURCHASE_ORDERS PO
+    JOIN FLS_PROD_DB.MART_DYN_FO.WORKER W ON PO.Requester = W.RECID
+    JOIN FLS_PROD_DB.MART_DYN_FO.PERSON_NAME PN ON PN.PERSON = W.PERSON
+    WHERE VALIDTO >= CURRENT_DATE()
+  ) REQ ON REQ.PURCHID = PL.PURCHID AND REQ.dataareaid = PL.dataareaid
+  LEFT JOIN FLS_PROD_DB.MART_DYN_FO.VENDORS V ON PL.vendaccount = V.accountnum AND UPPER(PL.dataareaid) = UPPER(V.dataareaid)
+  LEFT JOIN FLS_PROD_DB.MART_DYN_FO.GLOBAL_ADDRESS_BOOK DPT ON V.Party = DPT.recid
+  LEFT JOIN FLS_PROD_DB.MART_DYN_FO.DOCUMENT_REFERENCES DR
+    ON PL.tableid = DR.reftableid AND PL.recid = DR.refrecid AND UPPER(PL.dataareaid) = UPPER(DR.RefCompanyId)
+  WHERE PL.linedeliverytype NOT IN (1) AND PL.isdeleted = 0
+    AND UPPER(PL.dataareaid) IN {companies_sql}
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY PL.PurchId, PL.LineNumber, PL.dataareaid ORDER BY DR.CREATEDDATETIME DESC NULLS LAST) = 1
+),
+CTE_ITEM_COVERAGE AS (
+  SELECT ITEMID, DATAAREAID, MININVENTONHAND AS MIN_ON_HAND, MAXINVENTONHAND AS MAX_ON_HAND,
+    REQGROUPID, covinventdimid, EFFECTIVE_FROM
+  FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY ITEMID, DATAAREAID, covinventdimid ORDER BY EFFECTIVE_FROM DESC) AS rn
+    FROM FLS_PROD_DB.MART_DYN_FO.ITEM_COVERAGE
+    WHERE UPPER(dataareaid) IN {companies_sql}
+  ) t WHERE rn = 1
+),
+CTE_ITO_Dedup AS (
+  SELECT * FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY recid, dataareaid ORDER BY recid) AS ito_rn
+    FROM FLS_PROD_DB.MART_DYN_FO.INVENTORY_TRANSACTIONS_ORIGINATOR
+    WHERE UPPER(dataareaid) IN {companies_sql}
+  ) t WHERE ito_rn = 1
+),
+EndPO_ReqDate AS (
+  SELECT itemid, dataareaid, MAX(reqdate) AS End_PO_ReqDate
+  FROM CTE_Net_Requirements WHERE reftype = 8 GROUP BY itemid, dataareaid
+),
+EndPO_Qty AS (
+  SELECT nr.itemid, nr.dataareaid, COALESCE(SUM(nr.qty), 0) AS End_PO_Qty, epr.End_PO_ReqDate
+  FROM CTE_Net_Requirements nr
+  JOIN EndPO_ReqDate epr ON nr.itemid = epr.itemid AND nr.dataareaid = epr.dataareaid
+  WHERE nr.reftype = 8 AND nr.reqdate = epr.End_PO_ReqDate
+  GROUP BY nr.itemid, nr.dataareaid, epr.End_PO_ReqDate
+),
+CTE_Inventory_Dimensions AS (
+  SELECT * FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY inventdimid, dataareaid ORDER BY inventdimid) AS id_rn
+    FROM FLS_PROD_DB.MART_DYN_FO.INVENTORY_DIMENSIONS
+    WHERE UPPER(dataareaid) IN {companies_sql}
+  ) t WHERE id_rn = 1
+),
+CTE_Items AS (
+  SELECT * FROM (
+    SELECT *, ROW_NUMBER() OVER (PARTITION BY itemid, dataareaid ORDER BY itemid) AS it_rn
+    FROM FLS_PROD_DB.MART_DYN_FO.ITEMS
+    WHERE UPPER(dataareaid) IN {companies_sql}
+  ) t WHERE it_rn = 1
+),
+BaseData AS (
+  SELECT
+    ID.inventlocationid, rt.itemid, rt.dataareaid,
+    COALESCE(OL.createddatetime, POS.createddatetime, PORDL.createddate) AS PO_SO_Prod_CreationDate,
+    rt.reftype AS REFERENCE_TYPE, POS.linenumber, rt.futuresdays,
+    rt.reqdate AS REQ_DATE, POS.currencycode, POS.confirmedshipdate,
+    rt.qty AS QTY, IC.MIN_ON_HAND, IC.MAX_ON_HAND, rt.covinventdimid,
+    rt.IsDelete, rt.recid AS nr_recid,
+    SUM(rt.qty) OVER (
+      PARTITION BY rt.itemid, rt.dataareaid, rt.covinventdimid
+      ORDER BY rt.reqdate,
+        CASE rt.reftype WHEN 1 THEN 1 WHEN 10 THEN 2 WHEN 8 THEN 3 WHEN 12 THEN 4 WHEN 9 THEN 5 WHEN 32 THEN 6 ELSE 7 END,
+        rt.refid ASC, COALESCE(rt.INVENTTRANSORIGIN, 0) ASC, rt.recid ASC
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS Accumulated,
+    POS.VENDACCOUNT AS VEND_ACCT, POS.VendName AS VendorName,
+    POS.CONFIRMED_RECEIPT_DATE, POS.EXPEDITE_STATUS, POS.ORDERER, POS.EXPEDITOR,
+    POS.NOTES, POS.PurchStatus, rt.INVENTTRANSORIGIN, rt.refid,
+    ITO.recid AS itorecid, ITO.itemid AS ITOItemid, POS.party, POS.recid,
+    IT.itembuyergroupid, IT.itemtype AS item_itemtype, POS.PurchPrice,
+    OL.DeliveryName, OL.CustomerName, OL.CUSTOMERREF, OL.DeliveryPostalAddress,
+    PORDL.CUSTOMERREF AS prodordCustomerref, PORDL.DeliveryName AS prodordDeliveryPostalAddress,
+    rt.planversion
+  FROM CTE_Net_Requirements rt
+  LEFT JOIN CTE_Inventory_Dimensions ID ON rt.covinventdimid = ID.inventdimid AND UPPER(rt.dataareaid) = UPPER(ID.dataareaid)
+  LEFT JOIN CTE_ITEM_COVERAGE IC ON rt.itemid = IC.itemid AND UPPER(rt.dataareaid) = UPPER(IC.dataareaid) AND rt.covinventdimid = IC.covinventdimid
+  LEFT JOIN CTE_Open_Sales_Orders_Lines OL ON rt.refid = OL.salesid AND UPPER(rt.dataareaid) = UPPER(OL.dataareaid) AND rt.itemid = OL.itemid
+  LEFT JOIN CTE_ITO_Dedup ITO ON rt.INVENTTRANSORIGIN = ITO.recid AND UPPER(rt.dataareaid) = UPPER(ITO.dataareaid)
+  LEFT JOIN CTE_Open_Purchase_Order_Lines POS ON POS.Inventtransid = ITO.INVENTTRANSID AND UPPER(POS.dataareaid) = UPPER(ITO.dataareaid) AND POS.itemid = ITO.itemid
+  LEFT JOIN CTE_Open_Production_Order_Lines PORDL ON rt.REFID = PORDL.PRODID AND UPPER(rt.dataareaid) = UPPER(PORDL.dataareaid) AND PORDL.itemid = rt.itemid
+  LEFT JOIN CTE_Items IT ON IT.itemid = rt.itemid AND IT.dataareaid = rt.dataareaid
+  WHERE (rt.reftype <> 8 OR (rt.reftype = 8 AND POS.Purchstatus = 1))
+    AND ID.inventlocationid = '{warehouse.upper()}'
+    AND COALESCE(IT.itemtype, 0) = 0
+    AND rt.itemid NOT IN ('999805', 'DTOOL-CAPITAL', 'DTOOL-EXPENSE')
+    {item_filter}
+),
+WithPrev AS (
+  SELECT bd.*,
+    LAG(bd.Accumulated) OVER (
+      PARTITION BY bd.itemid, bd.dataareaid, bd.covinventdimid
+      ORDER BY bd.REQ_DATE,
+        CASE bd.REFERENCE_TYPE WHEN 1 THEN 1 WHEN 10 THEN 2 WHEN 8 THEN 3 WHEN 12 THEN 4 WHEN 9 THEN 5 WHEN 32 THEN 6 ELSE 7 END,
+        bd.refid ASC, COALESCE(bd.INVENTTRANSORIGIN, 0) ASC, bd.nr_recid ASC
+    ) AS PrevAccumulated,
+    MIN(bd.Accumulated) OVER (
+      PARTITION BY bd.itemid, bd.dataareaid, bd.covinventdimid
+      ORDER BY bd.REQ_DATE,
+        CASE bd.REFERENCE_TYPE WHEN 1 THEN 1 WHEN 10 THEN 2 WHEN 8 THEN 3 WHEN 12 THEN 4 WHEN 9 THEN 5 WHEN 32 THEN 6 ELSE 7 END,
+        bd.refid ASC, COALESCE(bd.INVENTTRANSORIGIN, 0) ASC, bd.nr_recid ASC
+      ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+    ) AS MinAccumulated,
+    ROW_NUMBER() OVER (
+      PARTITION BY bd.itemid, bd.dataareaid, bd.covinventdimid
+      ORDER BY bd.REQ_DATE,
+        CASE bd.REFERENCE_TYPE WHEN 1 THEN 1 WHEN 10 THEN 2 WHEN 8 THEN 3 WHEN 12 THEN 4 WHEN 9 THEN 5 WHEN 32 THEN 6 ELSE 7 END,
+        bd.refid ASC, COALESCE(bd.INVENTTRANSORIGIN, 0) ASC, bd.nr_recid ASC
+    ) AS RowSortRank,
+    MIN(CASE WHEN bd.Accumulated < 0 THEN bd.REQ_DATE END)
+      OVER (PARTITION BY bd.itemid, bd.dataareaid, bd.covinventdimid) AS First_Shortage_Date
+  FROM BaseData bd
+),
+DefaultMIN AS (
+  SELECT itemid, dataareaid, lowestqty
+  FROM FLS_PROD_DB.EDW_RV.INVENTITEMPURCHSETUP_DYNFO_SAT
+  WHERE sequence = 0 AND UPPER(dataareaid) IN {companies_sql}
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY itemid, dataareaid ORDER BY MODIFIEDDATETIME DESC) = 1
+),
+Final AS (
+  SELECT
+    rt.inventlocationid,
+    rt.itemid,
+    rt.dataareaid,
+    rt.PO_SO_Prod_CreationDate,
+    CASE rt.REFERENCE_TYPE
+      WHEN 1  THEN 'On-hand'      WHEN 8  THEN 'Purchase order'
+      WHEN 9  THEN 'Production'   WHEN 10 THEN 'Sales order'
+      WHEN 12 THEN 'Production line' WHEN 14 THEN 'Safety stock'
+      WHEN 16 THEN 'Transfer Order'  WHEN 32 THEN 'BOM line'
+    END AS REFERENCE_TYPE,
+    rt.linenumber, rt.futuresdays, rt.notes, rt.REQ_DATE,
+    rt.currencycode, rt.confirmedshipdate, rt.QTY,
+    rt.MIN_ON_HAND, rt.MAX_ON_HAND,
+    rt.PrevAccumulated, rt.MinAccumulated, rt.Accumulated,
+    rt.CUSTOMERREF, rt.deliverypostaladdress,
+    rt.prodordCustomerref, rt.prodordDeliveryPostalAddress,
+    MAX(rt.REQ_DATE) OVER (PARTITION BY rt.itemid, rt.covinventdimid) AS MaxReqDate,
+    rt.planversion,
+    COALESCE(ep.End_PO_Qty, 0) AS End_PO_Qty,
+    ep.End_PO_ReqDate, rt.First_Shortage_Date,
+    CASE
+      WHEN rt.REFERENCE_TYPE <> 8 THEN 'No Action'
+      WHEN COALESCE(rt.PrevAccumulated, 0) < 0 THEN
+        CASE WHEN rt.REQ_DATE > rt.First_Shortage_Date THEN
+          CASE WHEN rt.EXPEDITE_STATUS IN ('ARQ','AFRQ','ERQ','RRQ','TRQ','T') THEN 'No Action' ELSE 'Expedite Shortage' END
+        ELSE 'No Action' END
+      WHEN COALESCE(rt.PrevAccumulated, 0) < COALESCE(rt.MIN_ON_HAND, 0) THEN
+        CASE WHEN rt.EXPEDITE_STATUS IS NULL OR rt.EXPEDITE_STATUS IN ('C','O','W','FLSD','SSD') THEN 'ROP Shortage' ELSE 'No Action' END
+      WHEN COALESCE(rt.PrevAccumulated, 0) > COALESCE(rt.MAX_ON_HAND, 0) AND COALESCE(rt.MAX_ON_HAND, 0) > 0 THEN
+        CASE WHEN (COALESCE(rt.Accumulated,0) - (COALESCE(rt.MAX_ON_HAND,0) + COALESCE(DF.lowestqty,0))) <= COALESCE(rt.QTY,0) THEN 'Decrease'
+          ELSE CASE WHEN rt.EXPEDITE_STATUS IN ('O','OT') THEN 'No Action' ELSE 'Cancel' END END
+      WHEN (COALESCE(rt.QTY,0) + COALESCE(rt.PrevAccumulated,0)) > COALESCE(rt.MAX_ON_HAND,0) AND COALESCE(rt.MAX_ON_HAND,0) > 0 THEN
+        CASE WHEN (COALESCE(rt.Accumulated,0) - (COALESCE(rt.MAX_ON_HAND,0) + COALESCE(DF.lowestqty,0))) <= COALESCE(rt.QTY,0) THEN 'Decrease'
+          ELSE CASE WHEN rt.EXPEDITE_STATUS IN ('O','OT') THEN 'No Action' ELSE 'Cancel' END END
+      WHEN COALESCE(rt.Accumulated,0) > (COALESCE(rt.MAX_ON_HAND,0) + COALESCE(DF.lowestqty,0)) AND COALESCE(rt.MAX_ON_HAND,0) > 0 THEN
+        CASE WHEN (COALESCE(rt.Accumulated,0) - (COALESCE(rt.MAX_ON_HAND,0) + COALESCE(DF.lowestqty,0))) <= COALESCE(rt.QTY,0) THEN 'Decrease'
+          ELSE CASE WHEN rt.EXPEDITE_STATUS IN ('O','OT') THEN 'No Action' ELSE 'Cancel' END END
+      ELSE 'No Action'
+    END AS Action_Status,
+    rt.VEND_ACCT, rt.VendorName, rt.CONFIRMED_RECEIPT_DATE,
+    rt.EXPEDITE_STATUS, rt.ORDERER, rt.EXPEDITOR, rt.NOTES, rt.PurchStatus,
+    rt.INVENTTRANSORIGIN, rt.refid, rt.itembuyergroupid, rt.PurchPrice,
+    rt.DeliveryName, rt.CustomerName, DF.lowestqty,
+    COALESCE(rt.MAX_ON_HAND,0) + COALESCE(DF.lowestqty,0) AS MAX_PLUS_MOQ,
+    COALESCE(rt.Accumulated,0) - (COALESCE(rt.MAX_ON_HAND,0) + COALESCE(DF.lowestqty,0)) AS END_ACC_MINUS_MAX_MOQ
+  FROM WithPrev rt
+  LEFT JOIN DefaultMIN DF ON rt.itemid = DF.ITEMID AND UPPER(rt.dataareaid) = UPPER(DF.DATAAREAID)
+  LEFT JOIN EndPO_Qty ep ON rt.itemid = ep.itemid AND UPPER(rt.dataareaid) = UPPER(ep.dataareaid)
+  WHERE UPPER(rt.dataareaid) IN {companies_sql}
+    AND rt.inventlocationid = '{warehouse.upper()}'
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY rt.itemid, rt.dataareaid, rt.REFERENCE_TYPE, rt.REQ_DATE,
+      COALESCE(rt.refid,''), COALESCE(rt.linenumber,0),
+      COALESCE(rt.INVENTTRANSORIGIN,0), COALESCE(rt.QTY,0),
+      COALESCE(rt.covinventdimid,''), rt.nr_recid
+    ORDER BY CASE WHEN rt.VEND_ACCT IS NOT NULL THEN 0 ELSE 1 END ASC, rt.refid ASC
+  ) = 1
+)
+SELECT * FROM Final
+WHERE 1=1 {action_filter}
+ORDER BY itemid, dataareaid, covinventdimid,
+  CASE WHEN REFERENCE_TYPE = 'On-hand' THEN 0 ELSE 1 END,
+  REQ_DATE ASC,
+  CASE REFERENCE_TYPE WHEN 'Sales order' THEN 2 WHEN 'Purchase order' THEN 3 WHEN 'Production line' THEN 4 WHEN 'Production' THEN 5 WHEN 'BOM line' THEN 6 ELSE 7 END,
+  refid ASC
+LIMIT {limit}
+    """
+    return run_query(sql)
+
+
+# ── AI Chat Assistant ───────────────────────────────────────────────────────
+
+class ChatRequest(BaseModel):
+    messages: list[dict]
+    company: str = "US2"
+
+@app.post("/api/chat")
+def chat(body: ChatRequest):
+    return run_chat(body.messages, run_query, body.company)
+
+
+@app.get("/api/data-quality")
+def get_data_quality():
+    checks = {}
+
+    # ── Row counts per mart ──────────────────────────────────────────────────
+    mart_counts_sql = """
+    SELECT 'ONHAND_INVENTORY' AS mart, COUNT(*) AS rows, COUNT(DISTINCT DATAAREAID) AS companies FROM MART_DYN_FO.ONHAND_INVENTORY
+    UNION ALL SELECT 'ITEMS', COUNT(*), COUNT(DISTINCT DATAAREAID) FROM MART_DYN_FO.ITEMS
+    UNION ALL SELECT 'PURCHASE_ORDERS', COUNT(*), COUNT(DISTINCT DATAAREAID) FROM MART_DYN_FO.PURCHASE_ORDERS
+    UNION ALL SELECT 'PURCHASE_ORDER_LINE', COUNT(*), COUNT(DISTINCT DATAAREAID) FROM MART_DYN_FO.PURCHASE_ORDER_LINE
+    UNION ALL SELECT 'SALES_ORDERS', COUNT(*), COUNT(DISTINCT DATAAREAID) FROM MART_DYN_FO.SALES_ORDERS
+    UNION ALL SELECT 'ORDER_LINES', COUNT(*), COUNT(DISTINCT DATAAREAID) FROM MART_DYN_FO.ORDER_LINES
+    UNION ALL SELECT 'INVENTORY_TRANSACTIONS', COUNT(*), COUNT(DISTINCT DATAAREAID) FROM MART_DYN_FO.INVENTORY_TRANSACTIONS
+    UNION ALL SELECT 'DEMAND_FORECAST', COUNT(*), COUNT(DISTINCT DATAAREAID) FROM MART_DYN_FO.DEMAND_FORECAST
+    UNION ALL SELECT 'BOM_VERSIONS', COUNT(*), COUNT(DISTINCT DATAAREAID) FROM MART_DYN_FO.BOM_VERSIONS
+    UNION ALL SELECT 'BOM_LINES', COUNT(*), COUNT(DISTINCT DATAAREAID) FROM MART_DYN_FO.BOM_LINES
+    UNION ALL SELECT 'NET_REQUIREMENTS', COUNT(*), COUNT(DISTINCT DATAAREAID) FROM MART_DYN_FO.NET_REQUIREMENTS
+    """
+    checks["mart_counts"] = run_query(mart_counts_sql)
+
+    # ── Company coverage ─────────────────────────────────────────────────────
+    company_coverage_sql = """
+    SELECT UPPER(DATAAREAID) AS company,
+        COUNT(DISTINCT ITEMID) AS items,
+        SUM(AVAILPHYSICAL) AS total_available,
+        SUM(PHYSICALINVENT) AS total_on_hand
+    FROM MART_DYN_FO.ONHAND_INVENTORY
+    GROUP BY UPPER(DATAAREAID)
+    ORDER BY company
+    """
+    checks["company_coverage"] = run_query(company_coverage_sql)
+
+    # ── Completeness: items missing price ────────────────────────────────────
+    missing_price_sql = """
+    SELECT UPPER(I.DATAAREAID) AS company,
+        COUNT(DISTINCT I.ITEMID) AS total_items,
+        COUNT(DISTINCT P.ITEMID) AS items_with_price,
+        COUNT(DISTINCT I.ITEMID) - COUNT(DISTINCT P.ITEMID) AS missing_price,
+        ROUND(100.0 * COUNT(DISTINCT P.ITEMID) / NULLIF(COUNT(DISTINCT I.ITEMID), 0), 1) AS pct_priced
+    FROM MART_DYN_FO.ITEMS I
+    LEFT JOIN (SELECT DISTINCT ITEMID, DATAAREAID FROM MART_DYN_FO.PRICE WHERE PRICETYPE = '0') P
+        ON I.ITEMID = P.ITEMID AND I.DATAAREAID = P.DATAAREAID
+    GROUP BY UPPER(I.DATAAREAID)
+    ORDER BY company
+    """
+    checks["missing_price"] = run_query(missing_price_sql)
+
+    # ── Completeness: items missing supplier ─────────────────────────────────
+    missing_supplier_sql = """
+    SELECT UPPER(DATAAREAID) AS company,
+        COUNT(*) AS total_items,
+        COUNT(PRIMARYVENDORID) AS items_with_supplier,
+        COUNT(*) - COUNT(PRIMARYVENDORID) AS missing_supplier,
+        ROUND(100.0 * COUNT(PRIMARYVENDORID) / NULLIF(COUNT(*), 0), 1) AS pct_with_supplier
+    FROM MART_DYN_FO.ITEMS
+    GROUP BY UPPER(DATAAREAID)
+    ORDER BY company
+    """
+    checks["missing_supplier"] = run_query(missing_supplier_sql)
+
+    # ── Completeness: PO lines missing confirmed ship date ───────────────────
+    missing_shipdate_sql = """
+    SELECT UPPER(DATAAREAID) AS company,
+        COUNT(*) AS total_po_lines,
+        COUNT(CASE WHEN CONFIRMEDSHIPDATE IS NOT NULL AND CAST(CONFIRMEDSHIPDATE AS VARCHAR) NOT LIKE '1900%' THEN 1 END) AS with_confirmed_date,
+        COUNT(*) - COUNT(CASE WHEN CONFIRMEDSHIPDATE IS NOT NULL AND CAST(CONFIRMEDSHIPDATE AS VARCHAR) NOT LIKE '1900%' THEN 1 END) AS missing_date,
+        ROUND(100.0 * COUNT(CASE WHEN CONFIRMEDSHIPDATE IS NOT NULL AND CAST(CONFIRMEDSHIPDATE AS VARCHAR) NOT LIKE '1900%' THEN 1 END) / NULLIF(COUNT(*), 0), 1) AS pct_complete
+    FROM MART_DYN_FO.PURCHASE_ORDER_LINE
+    WHERE PURCHSTATUS = 1
+    GROUP BY UPPER(DATAAREAID)
+    ORDER BY company
+    """
+    checks["missing_shipdate"] = run_query(missing_shipdate_sql)
+
+    # ── Consistency: on-hand items not in item master ────────────────────────
+    orphan_items_sql = """
+    SELECT UPPER(O.DATAAREAID) AS company,
+        COUNT(DISTINCT O.ITEMID) AS onhand_items,
+        COUNT(DISTINCT I.ITEMID) AS matched_in_master,
+        COUNT(DISTINCT O.ITEMID) - COUNT(DISTINCT I.ITEMID) AS orphan_items
+    FROM MART_DYN_FO.ONHAND_INVENTORY O
+    LEFT JOIN MART_DYN_FO.ITEMS I ON O.ITEMID = I.ITEMID AND O.DATAAREAID = I.DATAAREAID
+    WHERE O.PHYSICALINVENT > 0
+    GROUP BY UPPER(O.DATAAREAID)
+    ORDER BY company
+    """
+    checks["orphan_items"] = run_query(orphan_items_sql)
+
+    # ── Freshness: date ranges per key mart ──────────────────────────────────
+    freshness_sql = """
+    SELECT 'PURCHASE_ORDERS' AS mart,
+        MIN(CAST(CREATEDDATETIME AS DATE)) AS oldest_record,
+        MAX(CAST(CREATEDDATETIME AS DATE)) AS newest_record,
+        DATEDIFF('day', MAX(CAST(CREATEDDATETIME AS DATE)), CURRENT_DATE) AS days_since_latest
+    FROM MART_DYN_FO.PURCHASE_ORDERS
+    UNION ALL
+    SELECT 'SALES_ORDERS',
+        MIN(CAST(CREATEDDATETIME AS DATE)),
+        MAX(CAST(CREATEDDATETIME AS DATE)),
+        DATEDIFF('day', MAX(CAST(CREATEDDATETIME AS DATE)), CURRENT_DATE)
+    FROM MART_DYN_FO.SALES_ORDERS
+    UNION ALL
+    SELECT 'INVENTORY_TRANSACTIONS',
+        MIN(DATEPHYSICAL),
+        MAX(DATEPHYSICAL),
+        DATEDIFF('day', MAX(DATEPHYSICAL), CURRENT_DATE)
+    FROM MART_DYN_FO.INVENTORY_TRANSACTIONS
+    WHERE DATEPHYSICAL > '1900-01-02'
+    """
+    checks["freshness"] = run_query(freshness_sql)
+
+    # ── On-hand value by company ─────────────────────────────────────────────
+    onhand_value_sql = """
+    SELECT UPPER(O.DATAAREAID) AS company,
+        COUNT(DISTINCT O.ITEMID) AS items_with_stock,
+        ROUND(SUM(O.PHYSICALINVENT), 0) AS total_qty,
+        COUNT(CASE WHEN P.PRICE IS NOT NULL THEN 1 END) AS priced_lines,
+        COUNT(CASE WHEN P.PRICE IS NULL THEN 1 END) AS unpriced_lines,
+        ROUND(SUM(O.PHYSICALINVENT * COALESCE(P.PRICE, 0)), 0) AS total_value_local
+    FROM MART_DYN_FO.ONHAND_INVENTORY O
+    LEFT JOIN (
+        SELECT ITEMID, DATAAREAID, PRICE
+        FROM MART_DYN_FO.PRICE
+        WHERE PRICETYPE = '0'
+        QUALIFY ROW_NUMBER() OVER (PARTITION BY ITEMID, DATAAREAID ORDER BY ACTIVATIONDATE DESC) = 1
+    ) P ON O.ITEMID = P.ITEMID AND O.DATAAREAID = P.DATAAREAID
+    WHERE O.PHYSICALINVENT > 0
+    GROUP BY UPPER(O.DATAAREAID)
+    ORDER BY company
+    """
+    checks["onhand_value"] = run_query(onhand_value_sql)
+
+    return checks
 
 
 @app.get("/health")
