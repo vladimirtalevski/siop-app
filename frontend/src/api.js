@@ -79,8 +79,13 @@ export const fetchSlowMoving = (params) =>
 
 export const fetchExpedite = (params) =>
   USE_STATIC
-    ? Promise.resolve({ static_mode: true })
+    ? loadStatic("expedite")
     : api.get("/api/expedite", { params }).then((r) => r.data);
+
+export const fetchDataQuality = () =>
+  USE_STATIC
+    ? loadStatic("data_quality")
+    : fetch(`${BASE}/api/data-quality`).then((r) => r.json());
 
 export const sendChat = (messages, company) =>
   USE_STATIC

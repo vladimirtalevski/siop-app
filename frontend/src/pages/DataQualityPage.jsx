@@ -1,12 +1,5 @@
 import { useState, useEffect } from "react";
-import { sendChat } from "../api";
-
-const USE_STATIC = import.meta.env.VITE_USE_STATIC === "true";
-const BASE = import.meta.env.VITE_API_URL || "http://localhost:8000";
-
-function fetchDataQuality() {
-  return fetch(`${BASE}/api/data-quality`).then(r => r.json());
-}
+import { fetchDataQuality } from "../api";
 
 function fmt(n) {
   if (n == null) return "—";
@@ -100,18 +93,11 @@ export default function DataQualityPage() {
   const [error, setError] = useState(null);
 
   useEffect(() => {
-    if (USE_STATIC) { setLoading(false); return; }
     fetchDataQuality()
       .then(setData)
       .catch(e => setError(e.message))
       .finally(() => setLoading(false));
   }, []);
-
-  if (USE_STATIC) return (
-    <div style={{ padding: 40, textAlign: "center", color: "#6b7280" }}>
-      Data Quality requires a live backend connection. Run locally with start.bat.
-    </div>
-  );
 
   if (loading) return (
     <div style={{ padding: 40, textAlign: "center", color: "#6b7280" }}>

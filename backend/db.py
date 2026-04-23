@@ -25,19 +25,39 @@ _REPLACEMENTS = [
     (r'FLS_PROD_DB\.RAW_SHAREPOINT_CI\.', "siop_db.PUBLIC."),
 ]
 
+# Bare table names used in some queries (without schema prefix)
+_BARE_TABLES = [
+    "ONHAND_INVENTORY", "DEMAND_FORECAST", "ITEMS", "ORDER_LINES",
+    "PURCHASE_ORDERS", "PURCHASE_ORDER_LINE", "INVENTORY_TRANSACTIONS",
+    "INVENTORY_DIMENSIONS", "PRICE", "PRODUCT_TRANSLATIONS", "BOM_VERSIONS",
+    "BOM_LINES", "NET_REQUIREMENTS", "SALES_ORDERS", "WAREHOUSES",
+    "ITEM_COVERAGE", "ENOVIA_ATTRIBUTES", "DIMENSION_CODE_SET",
+    "BUYER_GROUPS", "SUPPLY_TYPE_SETUP", "ITEM_COVERAGE_GROUPS",
+    "ITEM_PURCHASE_ORDER_SETTINGS", "VENDORS", "SITE", "CUSTOMERS",
+    "VENDOR_PRODUCT_RECEIPT_LINES", "CUSTOMER_PACKING_SLIP_LINES",
+    "CUSTOMER_INVOICE_LINES", "ADDRESSES", "GLOBAL_ADDRESS_BOOK",
+    "DOCUMENT_REFERENCES", "WORKER", "PERSON_NAME", "PRODUCTION_ORDERS",
+    "PRODUCTION_BOM", "INVENTORY_TRANSACTIONS_ORIGINATOR",
+]
+
 
 def rewrite_sql(sql: str) -> str:
     if not USE_MOTHERDUCK:
         return sql
     for pattern, replacement in _REPLACEMENTS:
         sql = re.sub(pattern, replacement, sql, flags=re.IGNORECASE)
+    # Prefix bare table names not already qualified
+    for table in _BARE_TABLES:
+        # Only match bare table names: preceded by FROM/JOIN/INTO and not already prefixed with a dot
+        sql = re.sub(
+            rf'(?<!\.)(\b(?:FROM|JOIN|INTO)\s+)({table})\b(?!\s*\.)',
+            lambda m: m.group(1) + "siop_db.MART_DYN_FO." + m.group(2),
+            sql, flags=re.IGNORECASE
+        )
     # DuckDB compatibility fixes
     sql = re.sub(r'\bCURRENT_DATE\(\)', 'CURRENT_DATE', sql, flags=re.IGNORECASE)
     sql = re.sub(r'\bCURRENT_TIMESTAMP\(\)', 'CURRENT_TIMESTAMP', sql, flags=re.IGNORECASE)
     sql = re.sub(r'\bGETDATE\(\)', 'CURRENT_DATE', sql, flags=re.IGNORECASE)
-    sql = re.sub(r'\bYEAR\(CURRENT_DATE\)', 'YEAR(CURRENT_DATE)', sql, flags=re.IGNORECASE)
-    sql = re.sub(r'\bMONTH\(CURRENT_DATE\)', 'MONTH(CURRENT_DATE)', sql, flags=re.IGNORECASE)
-    sql = re.sub(r'\bDATEADD\(\'year\'', "DATEADD('year'", sql, flags=re.IGNORECASE)
     return sql
 
 
