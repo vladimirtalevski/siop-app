@@ -3,8 +3,5 @@ uvicorn[standard]
 python-dotenv
 pandas
 duckdb
-prophet
-scikit-learn
-statsmodels
 python-multipart
 anthropic
