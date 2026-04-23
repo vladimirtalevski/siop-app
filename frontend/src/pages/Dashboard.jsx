@@ -43,7 +43,7 @@ export default function Dashboard({ onNavigate }) {
     <div className="error">
       <strong>Connection error:</strong> {error}
       <div style={{ marginTop: 8, fontSize: 13, color: "#94a3b8" }}>
-        Make sure the backend is running at <a href="http://localhost:8000/health" target="_blank" rel="noreferrer" style={{color:"#60a5fa"}}>localhost:8000/health</a> and SSO login was completed.
+        Make sure the backend is running at <a href={`${import.meta.env.VITE_API_URL || "http://localhost:8000"}/api/health`} target="_blank" rel="noreferrer" style={{color:"#60a5fa"}}>the backend health endpoint</a>.
       </div>
     </div>
   );

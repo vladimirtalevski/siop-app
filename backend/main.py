@@ -7,8 +7,21 @@ from db import get_connection, rewrite_sql, USE_MOTHERDUCK
 import pandas as pd
 import threading
 from typing import Optional
-from forecast_ml import run_prophet_forecast
-from chat import run_chat
+try:
+    from forecast_ml import run_prophet_forecast
+    HAS_PROPHET = True
+except Exception as e:
+    print(f"⚠ Prophet not available: {e}")
+    HAS_PROPHET = False
+    run_prophet_forecast = None
+
+try:
+    from chat import run_chat
+    HAS_CHAT = True
+except Exception as e:
+    print(f"⚠ Chat not available: {e}")
+    HAS_CHAT = False
+    run_chat = None
 
 
 def _warm_connection():
@@ -891,6 +904,8 @@ def ml_forecast(
     company: Optional[str] = None,
     periods: int = 12,
 ):
+    if not HAS_PROPHET:
+        return JSONResponse(status_code=503, content={"error": "ML Forecast not available on this deployment"})
     return run_prophet_forecast(item_id=item_id, company=company, periods=periods)
 
 
@@ -1168,6 +1183,8 @@ class ChatRequest(BaseModel):
 
 @app.post("/api/chat")
 def chat(body: ChatRequest):
+    if not HAS_CHAT:
+        return JSONResponse(status_code=503, content={"error": "Chat not available on this deployment"})
     return run_chat(body.messages, run_query, body.company)
 
 
