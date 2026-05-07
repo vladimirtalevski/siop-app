@@ -58,6 +58,21 @@ def rewrite_sql(sql: str) -> str:
     sql = re.sub(r'\bCURRENT_DATE\(\)', 'CURRENT_DATE', sql, flags=re.IGNORECASE)
     sql = re.sub(r'\bCURRENT_TIMESTAMP\(\)', 'CURRENT_TIMESTAMP', sql, flags=re.IGNORECASE)
     sql = re.sub(r'\bGETDATE\(\)', 'CURRENT_DATE', sql, flags=re.IGNORECASE)
+    # TRY_TO_DATE(col, format) → TRY_CAST(col AS DATE)
+    sql = re.sub(r'\bTRY_TO_DATE\(([^,)]+)(?:,\s*\'[^\']*\')?\)', r'TRY_CAST(\1 AS DATE)', sql, flags=re.IGNORECASE)
+    # NVL → COALESCE
+    sql = re.sub(r'\bNVL\(', 'COALESCE(', sql, flags=re.IGNORECASE)
+    # TO_DECIMAL(x, p, s) → CAST(x AS DOUBLE)
+    sql = re.sub(r'\bTO_DECIMAL\(([^,)]+),\s*\d+,\s*\d+\)', r'CAST(\1 AS DOUBLE)', sql, flags=re.IGNORECASE)
+    # TO_VARCHAR(x) → CAST(x AS VARCHAR)
+    sql = re.sub(r'\bTO_VARCHAR\(([^)]+)\)', r'CAST(\1 AS VARCHAR)', sql, flags=re.IGNORECASE)
+    # CONTAINS(col, val) → contains(col, val)  — DuckDB is lowercase
+    sql = re.sub(r'\bCONTAINS\(', 'contains(', sql, flags=re.IGNORECASE)
+    # DATE type comparisons: cast VARCHAR date columns to DATE (handle optional table prefix)
+    sql = re.sub(r'(\w+\.)?(ACTIVATIONDATE|CREATEDDATETIME|DATEPHYSICAL|CONFIRMEDSHIPDATE)\s*(<=|>=|<|>|=)\s*(CURRENT_DATE\b)',
+                 lambda m: f'TRY_CAST({m.group(1) or ""}{m.group(2)} AS DATE) {m.group(3)} {m.group(4)}', sql, flags=re.IGNORECASE)
+    # DATEDIFF(DAY, ...) → DATEDIFF('day', ...) — DuckDB requires quoted interval
+    sql = re.sub(r'\bDATEDIFF\(\s*DAY\s*,', "DATEDIFF('day',", sql, flags=re.IGNORECASE)
     return sql
 
 

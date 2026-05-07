@@ -10,6 +10,7 @@ import SlowMovingPage from "./pages/SlowMovingPage";
 import ExpeditePage from "./pages/ExpeditePage";
 import ChatPage from "./pages/ChatPage";
 import DataQualityPage from "./pages/DataQualityPage";
+import SpeedUpDashboard from "./pages/SpeedUpDashboard";
 import "./App.css";
 
 const PAGES = [
@@ -24,6 +25,7 @@ const PAGES = [
   { id: "expedite", label: "Expedite Report" },
   { id: "chat", label: "AI Assistant" },
   { id: "data-quality", label: "Data Quality" },
+  { id: "speed-up", label: "Speed Up Dashboard" },
 ];
 
 export default function App() {
@@ -61,6 +63,7 @@ export default function App() {
         {page === "expedite" && <ExpeditePage />}
         {page === "chat" && <ChatPage />}
         {page === "data-quality" && <DataQualityPage />}
+        {page === "speed-up" && <SpeedUpDashboard />}
       </main>
     </div>
   );

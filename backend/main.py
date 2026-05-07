@@ -599,7 +599,7 @@ SELECT
     SO.SALESNAME                                                            AS customer_name,
     POL.LINENUMBER                                                          AS po_line_number,
     POH.ORDERACCOUNT                                                        AS vendor_id,
-    POH.VENDORNAME                                                          AS vendor_name,
+    POH.VENDORREF                                                           AS vendor_name,
     POH.INVENTLOCATIONID                                                    AS stockroom,
     POL.ITEMID                                                              AS item_id,
     POL.NAME                                                                AS item_name,
@@ -644,12 +644,12 @@ SELECT
     POL.LINEAMOUNT                                                          AS order_price,
     (RECE_QTY.RECEIVED_QTY * POL.PURCHPRICE)                               AS received_value,
     (POL.REMAINPURCHPHYSICAL * POL.PURCHPRICE)                              AS remaining_value,
-    MGL_PHS.PURCHASE_ORDER_PURCH_STATUS                                     AS po_header_status,
-    MGL_PS.PURCHASE_ORDER_LINE_PURCH_STATUS                                 AS po_status,
-    MGL_DSTATE.PURCHASE_ORDER_DOCUMENT_STATE                                AS approval_status,
+    CASE POH.PURCHSTATUS WHEN 1 THEN 'Open order' WHEN 2 THEN 'Received' WHEN 3 THEN 'Invoiced' ELSE CAST(POH.PURCHSTATUS AS VARCHAR) END AS po_header_status,
+    CASE POL.PURCHSTATUS WHEN 1 THEN 'Open order' WHEN 2 THEN 'Received' WHEN 3 THEN 'Invoiced' ELSE CAST(POL.PURCHSTATUS AS VARCHAR) END AS po_status,
+    CASE POH.DOCUMENTSTATE WHEN 0 THEN 'Draft' WHEN 1 THEN 'In review' WHEN 2 THEN 'Approved' WHEN 3 THEN 'Rejected' ELSE 'Unknown' END AS approval_status,
     CASE WHEN POL.FLSEXPEDITESTATUS IN ('T','K')
-              AND MGL_PS.PURCHASE_ORDER_LINE_PURCH_STATUS = 'Open order'
-              AND DATEADD(DAY,3,TRY_TO_DATE(LEFT(POL.CONFIRMEDDLV,10))) < CURRENT_DATE()
+              AND POL.PURCHSTATUS = 1
+              AND DATEADD(DAY,3,TRY_CAST(LEFT(POL.CONFIRMEDDLV,10) AS DATE)) < CURRENT_DATE
          THEN 'YES' ELSE 'NO' END                                           AS past_due,
     CASE
         WHEN COALESCE(
@@ -657,9 +657,9 @@ SELECT
                      WHEN (POL.DLVTERM LIKE 'D%') THEN NULLIF(LEFT(POL.DELIVERYDATE,10),'1900-01-01') END,
                 NULLIF(LEFT(POL.REQUESTEDSHIPDATE,10),'1900-01-01')
              ) IS NULL THEN 'Exclude'
-        WHEN MGL_DSTATE.PURCHASE_ORDER_DOCUMENT_STATE IN ('Draft','In review','Rejected') THEN 'Exclude'
+        WHEN POH.DOCUMENTSTATE IN (0, 3) THEN 'Exclude'
         WHEN POH.INVENTSITEID IS NULL OR POL.ITEMID LIKE '0TOOL%' THEN 'Exclude'
-        WHEN MGL_PS.PURCHASE_ORDER_LINE_PURCH_STATUS IN ('Canceled','Open order') THEN 'Exclude'
+        WHEN POL.PURCHSTATUS IN (1) THEN 'Exclude'
         ELSE 'Include'
     END                                                                     AS sifot_exclusion
 FROM FLS_PROD_DB.MART_DYN_FO.PURCHASE_ORDERS POH
@@ -676,32 +676,6 @@ LEFT JOIN CTE_RECEIVED_QTY RECE_QTY
     ON RECE_QTY.PURCHASE_ORDER = POL.PURCHID
    AND RECE_QTY.LINE_NUMBER = POL.LINENUMBER
    AND RECE_QTY.LEGALENTITY = POL.DATAAREAID
-LEFT JOIN (
-    SELECT s.option, s.localizedlabel AS PURCHASE_ORDER_LINE_PURCH_STATUS
-    FROM FLS_PROD_DB.EDW_META.ENTITY_GLOBALSET_DYNFO_META_MSAT s
-    WHERE s.ENTITY_GLOBALSET_LINK_HK IN (
-        SELECT entity_hk FROM FLS_PROD_DB.EDW_META.ENTITY_HUB WHERE entity = 'purchline'
-    )
-    QUALIFY ROW_NUMBER() OVER(PARTITION BY option ORDER BY s.load_datetime DESC) = 1
-) MGL_PS ON POL.PURCHSTATUS = MGL_PS.OPTION
-LEFT JOIN (
-    SELECT s.option, s.localizedlabel AS PURCHASE_ORDER_PURCH_STATUS
-    FROM FLS_PROD_DB.EDW_META.ENTITY_GLOBALSET_DYNFO_META_MSAT s
-    WHERE s.ENTITY_GLOBALSET_LINK_HK IN (
-        SELECT entity_hk FROM FLS_PROD_DB.EDW_META.ENTITY_HUB WHERE entity = 'purchTable'
-    )
-    QUALIFY ROW_NUMBER() OVER(PARTITION BY option ORDER BY s.load_datetime DESC) = 1
-) MGL_PHS ON POH.PURCHSTATUS = MGL_PHS.OPTION
-LEFT JOIN (
-    SELECT s.option, s.localizedlabel AS FLSINSPECTIONFLAG
-    FROM FLS_PROD_DB.EDW_META.ENTITY_GLOBALSET_DYNFO_META_MSAT s
-    QUALIFY ROW_NUMBER() OVER(PARTITION BY option ORDER BY s.load_datetime DESC) = 1
-) MGL_FG ON POL.FLSINSPECTIONFLAG = MGL_FG.OPTION
-LEFT JOIN (
-    SELECT s.option, s.localizedlabel AS PURCHASE_ORDER_DOCUMENT_STATE
-    FROM FLS_PROD_DB.EDW_META.ENTITY_GLOBALSET_DYNFO_META_MSAT s
-    QUALIFY ROW_NUMBER() OVER(PARTITION BY option ORDER BY s.load_datetime DESC) = 1
-) MGL_DSTATE ON POH.DOCUMENTSTATE = MGL_DSTATE.OPTION
 WHERE POL.PURCHSTATUS IN (1, 2, 3) {company_filter}
 GROUP BY ALL
 ORDER BY po_created_date DESC
@@ -716,21 +690,13 @@ def get_po_summary():
     sql = """
         SELECT
             POL.DATAAREAID AS company,
-            COALESCE(MGL_PS.purch_status, CAST(POL.PURCHSTATUS AS VARCHAR)) AS status,
+            CASE POL.PURCHSTATUS WHEN 1 THEN 'Open order' WHEN 2 THEN 'Received' WHEN 3 THEN 'Invoiced' ELSE CAST(POL.PURCHSTATUS AS VARCHAR) END AS status,
             COUNT(DISTINCT POL.PURCHID) AS po_count,
             COUNT(*) AS line_count,
             SUM(POL.RemainPurchPhysical * POL.PURCHPRICE) AS open_value
-        FROM PURCHASE_ORDER_LINE POL
-        LEFT JOIN (
-            SELECT s.option, s.localizedlabel AS purch_status
-            FROM FLS_PROD_DB.EDW_META.ENTITY_GLOBALSET_DYNFO_META_MSAT s
-            WHERE s.ENTITY_GLOBALSET_LINK_HK IN (
-                SELECT entity_globalset_link_hk FROM FLS_PROD_DB.EDW_META.ENTITY_HUB WHERE entity = 'purchline'
-            )
-            QUALIFY ROW_NUMBER() OVER(PARTITION BY option ORDER BY s.load_datetime DESC) = 1
-        ) MGL_PS ON POL.PURCHSTATUS = MGL_PS.OPTION
+        FROM siop_db.MART_DYN_FO.PURCHASE_ORDER_LINE POL
         WHERE POL.PURCHSTATUS IN (1, 2, 3)
-        GROUP BY POL.DATAAREAID, MGL_PS.purch_status, POL.PURCHSTATUS
+        GROUP BY POL.DATAAREAID, POL.PURCHSTATUS
         ORDER BY company, status
     """
     return run_query(sql)
@@ -747,8 +713,8 @@ SELECT
     S.DATAAREAID                                                            AS company,
     S.NAME                                                                  AS site_name,
     DCS.DESTINATIONVALUE                                                    AS destination,
-    CR.CUSTOMER_COUNTRY_NAME                                                AS destination_country,
-    CR.CUSTOMER_REGION_NAME_SERVICE                                         AS destination_region,
+    AD.COUNTRYREGIONID                                                      AS destination_country,
+    NULL                                                                    AS destination_region,
     SO.SALESID                                                              AS sales_order_id,
     SOL.LINENUM                                                             AS line_num,
     LEFT(SO.CREATEDDATETIME, 10)                                            AS so_created_date,
@@ -760,7 +726,7 @@ SELECT
     LEFT(SOL.RECEIPTDATECONFIRMED, 10)                                      AS receipt_date_confirmed,
     SOL.LINEAMOUNT                                                          AS so_line_value,
     I.PrimaryVendorId                                                       AS primary_supplier_id,
-    DS.SUPPLIER_NAME                                                        AS supplier_name,
+    I.PRIMARYVENDORID                                                       AS supplier_name,
     CPSL.QTY                                                                AS delivered_qty,
     (TO_DECIMAL(SOL.SALESPRICE, 38, 6) * NVL(CPSL.QTY, 0))                 AS invoiced_line_amount,
     SOL.CURRENCYCODE                                                        AS currency,
@@ -774,9 +740,9 @@ SELECT
     AD.COUNTRYREGIONID                                                      AS country,
     I.ITEMBUYERGROUPID                                                      AS part_expeditor,
     BG.DESCRIPTION                                                          AS part_expeditor_name,
-    MGL_SOL.sales_order_sales_status                                        AS sales_status,
-    MGL_SO.sales_order_header_sales_status                                  AS sales_header_status,
-    MGL_ST.sales_order_document_status                                      AS doc_status,
+    CASE SOL.SALESSTATUS WHEN 1 THEN 'Open order' WHEN 2 THEN 'Delivered' WHEN 3 THEN 'Invoiced' WHEN 4 THEN 'Cancelled' ELSE CAST(SOL.SALESSTATUS AS VARCHAR) END AS sales_status,
+    CASE SO.SALESSTATUS  WHEN 1 THEN 'Open order' WHEN 2 THEN 'Delivered' WHEN 3 THEN 'Invoiced' WHEN 4 THEN 'Cancelled' ELSE CAST(SO.SALESSTATUS AS VARCHAR)  END AS sales_header_status,
+    CASE SO.DOCUMENTSTATUS WHEN 0 THEN 'None' WHEN 1 THEN 'Confirmation' WHEN 2 THEN 'Picking list' WHEN 3 THEN 'Packing slip' WHEN 4 THEN 'Invoice' ELSE 'Unknown' END AS doc_status,
     COALESCE(
         NULLIF(LEFT(SOL.SHIPPINGDATECONFIRMED, 10), '1900-01-01'),
         NULLIF(LEFT(SOL.SHIPPINGDATEREQUESTED, 10), '1900-01-01')
@@ -816,28 +782,8 @@ LEFT JOIN FLS_PROD_DB.MART_DYN_FO.ENOVIA_ATTRIBUTES EA ON I.PRODUCT = EA.ECORESP
 LEFT JOIN FLS_PROD_DB.MART_DYN_FO.DIMENSION_CODE_SET DCS ON SOL.DEFAULTDIMENSION = DCS.RECID
 LEFT JOIN FLS_PROD_DB.MART_DYN_FO.BUYER_GROUPS BG ON I.ITEMBUYERGROUPID = BG._GROUP
 LEFT JOIN FLS_PROD_DB.MART_DYN_FO.ADDRESSES AD ON SO.DELIVERYPOSTALADDRESS = AD.RECID
-LEFT JOIN FLS_DEV_DB.MART_DYN_FO.MOC_AM_CAP MAC ON REGEXP_SUBSTR(EA.MOCCODE, '\\d*\\.?\\d+') = MAC."ROW LABELS"
 LEFT JOIN FLS_PROD_DB.MART_DYN_FO.SITE S ON UPPER(SO.DATAAREAID) = UPPER(S.DATAAREAID)
    AND UPPER(CASE WHEN SO.DATAAREAID = 'sa1' THEN 'SAUDI ARABIA' ELSE SO.INVENTSITEID END) = UPPER(S.NAME)
-LEFT JOIN FLS_PROD_DB.RAW_SHAREPOINT_CI.COUNTRY_REGION CR ON DCS.DESTINATIONVALUE = CR.CUSTOMER_COUNTRY_CODE
-LEFT JOIN FLS_PROD_DB.MART_DYN_FO.DIM_SUPPLIER DS ON I.PRIMARYVENDORID = DS.SUPPLIER_NUMBER
-LEFT JOIN (
-    SELECT s.option, s.localizedlabel AS sales_order_sales_status
-    FROM FLS_DEV_DB.EDW_META.ENTITY_GLOBALSET_DYNFO_META_MSAT s
-    WHERE s.ENTITY_GLOBALSET_LINK_HK IN (SELECT entity_hk FROM FLS_DEV_DB.EDW_META.ENTITY_HUB WHERE entity = 'salesline')
-    QUALIFY ROW_NUMBER() OVER(PARTITION BY option ORDER BY s.load_datetime DESC) = 1
-) MGL_SOL ON SOL.SALESSTATUS = MGL_SOL.OPTION
-LEFT JOIN (
-    SELECT s.option, s.localizedlabel AS sales_order_header_sales_status
-    FROM FLS_DEV_DB.EDW_META.ENTITY_GLOBALSET_DYNFO_META_MSAT s
-    WHERE s.ENTITY_GLOBALSET_LINK_HK IN (SELECT entity_hk FROM FLS_DEV_DB.EDW_META.ENTITY_HUB WHERE entity = 'salestable')
-    QUALIFY ROW_NUMBER() OVER(PARTITION BY option ORDER BY s.load_datetime DESC) = 1
-) MGL_SO ON SO.SALESSTATUS = MGL_SO.OPTION
-LEFT JOIN (
-    SELECT s.option, s.localizedlabel AS sales_order_document_status
-    FROM FLS_DEV_DB.EDW_META.ENTITY_GLOBALSET_DYNFO_META_MSAT s
-    QUALIFY ROW_NUMBER() OVER(PARTITION BY option ORDER BY s.load_datetime DESC) = 1
-) MGL_ST ON SO.DOCUMENTSTATUS = MGL_ST.OPTION
 WHERE 1=1 {company_filter}
 GROUP BY ALL
 ORDER BY so_created_date DESC

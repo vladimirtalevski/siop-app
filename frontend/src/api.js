@@ -87,6 +87,18 @@ export const fetchDataQuality = () =>
     ? loadStatic("data_quality")
     : fetch(`${BASE}/api/data-quality`).then((r) => r.json());
 
+export const fetchSpeedUp = () =>
+  USE_STATIC ? loadStatic("speed_up") : api.get("/api/speed-up").then((r) => r.data);
+
+export const fetchSpeedUpQuality = () =>
+  USE_STATIC ? loadStatic("speed_up_quality") : api.get("/api/speed-up/quality").then((r) => r.data);
+
+export const fetchCrossSite = () =>
+  USE_STATIC ? loadStatic("cross_site") : api.get("/api/cross-site").then((r) => r.data);
+
+export const fetchPurchasedNotUsed = () =>
+  USE_STATIC ? loadStatic("purchased_not_used") : api.get("/api/purchased-not-used").then((r) => r.data);
+
 export const sendChat = (messages, company) =>
   USE_STATIC
     ? Promise.resolve({ static_mode: true })
