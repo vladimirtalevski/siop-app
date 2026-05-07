@@ -151,3 +151,207 @@ body {
   transition: all .15s;
 }
 .quick-nav button:hover { background: #253047; color: #e2e8f0; border-color: #60a5fa; }
+
+/* ── Sidebar group labels ── */
+.sidebar-group-label {
+  padding: 14px 20px 4px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--g-color, #64748b);
+  opacity: 0.85;
+}
+
+/* ── Airport Home Page ── */
+.home-page {
+  display: flex;
+  flex-direction: column;
+  gap: 28px;
+  padding: 4px 0;
+}
+
+.home-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  padding-bottom: 24px;
+  border-bottom: 1px solid #1e2535;
+}
+
+.home-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 26px;
+  font-weight: 800;
+  color: #f1f5f9;
+  letter-spacing: -.3px;
+}
+
+.home-plane {
+  font-size: 28px;
+  animation: taxiway 4s ease-in-out infinite alternate;
+}
+
+@keyframes taxiway {
+  from { transform: translateX(0px) rotate(-5deg); }
+  to   { transform: translateX(6px) rotate(0deg); }
+}
+
+.home-subtitle {
+  margin-top: 6px;
+  font-size: 12.5px;
+  color: #64748b;
+}
+
+.home-tagline {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1.5px;
+  text-transform: uppercase;
+  color: #334155;
+  align-self: center;
+}
+
+/* ── Terminal grid ── */
+.terminal-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 18px;
+}
+
+.terminal-card {
+  background: var(--t-bg, rgba(255,255,255,0.04));
+  border: 1px solid #1e2535;
+  border-radius: 12px;
+  overflow: hidden;
+  transition: border-color .2s, box-shadow .2s;
+}
+
+.terminal-card:hover {
+  border-color: var(--t-accent, #60a5fa);
+  box-shadow: 0 0 0 1px var(--t-accent, #60a5fa), 0 8px 24px rgba(0,0,0,0.3);
+}
+
+.terminal-accent-bar {
+  height: 3px;
+  background: var(--t-accent, #60a5fa);
+}
+
+.terminal-top {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 18px 20px 12px;
+}
+
+.terminal-icon {
+  font-size: 26px;
+  line-height: 1;
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.terminal-name {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f1f5f9;
+  margin-bottom: 4px;
+}
+
+.terminal-description {
+  font-size: 11.5px;
+  color: #64748b;
+  line-height: 1.5;
+}
+
+/* ── Gate buttons ── */
+.terminal-gates {
+  display: flex;
+  flex-direction: column;
+  padding: 0 12px 14px;
+  gap: 4px;
+}
+
+.gate-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 9px 12px;
+  cursor: pointer;
+  text-align: left;
+  transition: background .15s, border-color .15s;
+  width: 100%;
+}
+
+.gate-btn:hover {
+  background: rgba(255,255,255,0.05);
+  border-color: #2d3a4e;
+}
+
+.gate-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.gate-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #cbd5e1;
+}
+
+.gate-btn:hover .gate-label {
+  color: var(--t-accent, #60a5fa);
+}
+
+.gate-desc {
+  font-size: 11px;
+  color: #475569;
+}
+
+.gate-arrow {
+  font-size: 14px;
+  color: #334155;
+  transition: transform .15s, color .15s;
+}
+
+.gate-btn:hover .gate-arrow {
+  transform: translateX(3px);
+  color: var(--t-accent, #60a5fa);
+}
+
+/* ── Status bar ── */
+.home-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 16px;
+  background: #161b27;
+  border: 1px solid #1e2535;
+  border-radius: 8px;
+  font-size: 11.5px;
+  color: #475569;
+  margin-top: auto;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #475569;
+  flex-shrink: 0;
+}
+
+.status-dot.green {
+  background: #22c55e;
+  box-shadow: 0 0 6px #22c55e;
+}
+
+.status-sep {
+  color: #2d3a4e;
+}
